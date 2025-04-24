@@ -1,0 +1,254 @@
+// Dashboard Interactivo Completo con Excel, Tabla Editable, Filtros Múltiples, KPI, Exportación y Firebase
+
+import React, { useEffect, useState } from 'react';
+import {
+  Container, Typography, Button, MenuItem, Select, FormControl, InputLabel, Checkbox, FormControlLabel,
+  Grid, TextField, Box, Chip
+} from '@mui/material';
+import { DataGrid } from '@mui/x-data-grid';
+import * as XLSX from 'xlsx';
+import { saveAs } from 'file-saver';
+import { Line } from 'react-chartjs-2';
+import 'chart.js/auto';
+import { initializeApp } from 'firebase/app';
+import { getDatabase, ref, set, get } from 'firebase/database';
+
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  databaseURL: "YOUR_DB_URL",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_BUCKET",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+initializeApp(firebaseConfig);
+const db = getDatabase();
+
+export default function DashboardExcel() {
+  const [tableData, setTableData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [xAxis, setXAxis] = useState(0);
+  const [chartTitle, setChartTitle] = useState("Gráfico desde Excel");
+  const [showLegend, setShowLegend] = useState(true);
+  const [filters, setFilters] = useState([]);
+  const [filterColumn, setFilterColumn] = useState(null);
+  const [filterValue, setFilterValue] = useState('');
+
+  useEffect(() => {
+    const fetchData = async () => {
+      const snapshot = await get(ref(db, 'excelData'));
+      if (snapshot.exists()) {
+        const { headers, data } = snapshot.val();
+        setHeaders(headers);
+        setTableData(data);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const bstr = evt.target.result;
+      const wb = XLSX.read(bstr, { type: 'binary' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+      const newHeaders = data[0];
+      const newData = data.slice(1);
+      setHeaders(newHeaders);
+      setTableData(newData);
+      set(ref(db, 'excelData'), { headers: newHeaders, data: newData });
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const addFilter = () => {
+    if (filterColumn !== null && filterValue) {
+      setFilters([...filters, { column: filterColumn, value: filterValue }]);
+      setFilterColumn(null);
+      setFilterValue('');
+    }
+  };
+
+  const removeFilter = (index) => {
+    setFilters(filters.filter((_, i) => i !== index));
+  };
+
+  const getFilteredData = () => {
+    return tableData.filter(row =>
+      filters.every(f => row[f.column]?.toString() === f.value)
+    );
+  };
+
+  const getChartData = () => {
+    const filteredData = getFilteredData();
+    const labels = filteredData.map(row => row[xAxis]);
+    const datasets = headers.map((head, idx) => {
+      if (idx === xAxis) return null;
+      return {
+        label: head,
+        data: filteredData.map(row => parseFloat(row[idx]) || 0),
+        borderColor: `hsl(${idx * 60}, 70%, 50%)`,
+        backgroundColor: `hsl(${idx * 60}, 70%, 90%)`,
+        fill: false,
+        tension: 0.3
+      };
+    }).filter(Boolean);
+    return { labels, datasets };
+  };
+
+  const calcularKPIs = () => {
+    const filteredData = getFilteredData();
+    return headers.map((head, idx) => {
+      if (idx === xAxis || isNaN(parseFloat(filteredData[0]?.[idx]))) return null;
+      const valores = filteredData.map(row => parseFloat(row[idx]) || 0);
+      const suma = valores.reduce((a, b) => a + b, 0);
+      const promedio = suma / valores.length;
+      return { campo: head, suma, promedio };
+    }).filter(Boolean);
+  };
+
+  const exportToExcel = () => {
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...tableData]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Hoja1");
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
+    const buf = new ArrayBuffer(wbout.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < wbout.length; i++) view[i] = wbout.charCodeAt(i) & 0xFF;
+    saveAs(new Blob([buf], { type: "application/octet-stream" }), "datos_exportados.xlsx");
+  };
+
+  const handleRowUpdate = (newRow) => {
+    const newData = [...tableData];
+    newData[newRow.id] = headers.map((h) => newRow[h]);
+    setTableData(newData);
+    set(ref(db, 'excelData'), { headers, data: newData });
+    return newRow;
+  };
+
+  const kpis = calcularKPIs();
+
+  return (
+    <Container>
+      <Typography variant="h4" align="center" gutterBottom>
+        Dashboard Interactivo con Excel, Gráficos y Base de Datos
+      </Typography>
+
+      <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} />
+
+      {headers.length > 0 && (
+        <>
+          <FormControl fullWidth margin="normal">
+            <InputLabel>Eje X</InputLabel>
+            <Select value={xAxis} label="Eje X" onChange={(e) => setXAxis(e.target.value)}>
+              {headers.map((head, idx) => (
+                <MenuItem key={idx} value={idx}>{head}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={5}>
+              <FormControl fullWidth>
+                <InputLabel>Columna</InputLabel>
+                <Select
+                  value={filterColumn ?? ''}
+                  onChange={(e) => setFilterColumn(e.target.value)}
+                  displayEmpty
+                >
+                  <MenuItem value="">(Seleccione columna)</MenuItem>
+                  {headers.map((head, idx) => (
+                    <MenuItem key={idx} value={idx}>{head}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={5}>
+              <TextField
+                fullWidth
+                label="Valor"
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+              />
+            </Grid>
+            <Grid item xs={2}>
+              <Button onClick={addFilter} variant="contained">Agregar</Button>
+            </Grid>
+          </Grid>
+
+          <Box mt={2}>
+            {filters.map((f, i) => (
+              <Chip
+                key={i}
+                label={`${headers[f.column]} = ${f.value}`}
+                onDelete={() => removeFilter(i)}
+                sx={{ mr: 1, mb: 1 }}
+              />
+            ))}
+          </Box>
+
+          <TextField
+            fullWidth
+            label="Título del gráfico"
+            value={chartTitle}
+            onChange={(e) => setChartTitle(e.target.value)}
+            margin="normal"
+          />
+
+          <FormControlLabel
+            control={<Checkbox checked={showLegend} onChange={() => setShowLegend(!showLegend)} />}
+            label="Mostrar leyenda"
+          />
+
+          <Box my={3}>
+            <Line
+              data={getChartData()}
+              options={{
+                responsive: true,
+                plugins: {
+                  title: { display: true, text: chartTitle },
+                  legend: { display: showLegend },
+                },
+                scales: {
+                  y: { title: { display: true, text: "Valor" } },
+                  x: { title: { display: true, text: headers[xAxis] } },
+                },
+              }}
+            />
+          </Box>
+
+          <Typography variant="h6">KPI de columnas numéricas</Typography>
+          <Grid container spacing={2}>
+            {kpis.map(kpi => (
+              <Grid item xs={6} md={3} key={kpi.campo}>
+                <Box p={2} border={"1px solid #ccc"} borderRadius={2}>
+                  <Typography variant="subtitle1">{kpi.campo}</Typography>
+                  <Typography variant="body2">Suma: {kpi.suma.toFixed(2)}</Typography>
+                  <Typography variant="body2">Promedio: {kpi.promedio.toFixed(2)}</Typography>
+                </Box>
+              </Grid>
+            ))}
+          </Grid>
+
+          <Box mt={3}>
+            <Button variant="contained" onClick={exportToExcel}>Exportar a Excel</Button>
+          </Box>
+
+          <Box mt={3} height={400}>
+            <DataGrid
+              rows={tableData.map((row, index) => ({ id: index, ...Object.fromEntries(headers.map((h, i) => [h, row[i]])) }))}
+              columns={headers.map(h => ({ field: h, headerName: h, editable: true, flex: 1 }))}
+              processRowUpdate={handleRowUpdate}
+              experimentalFeatures={{ newEditingApi: true }}
+            />
+          </Box>
+        </>
+      )}
+    </Container>
+  );
+}
